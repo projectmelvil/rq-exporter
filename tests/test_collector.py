@@ -13,6 +13,7 @@ from prometheus_client.core import CollectorRegistry
 from rq_exporter.collector import RQCollector
 
 
+@patch('rq_exporter.collector.get_oldest_job_ages', return_value={})
 @patch('rq_exporter.collector.get_jobs_by_queue')
 @patch('rq_exporter.collector.get_workers_stats')
 class RQCollectorTestCase(unittest.TestCase):
@@ -24,6 +25,7 @@ class RQCollectorTestCase(unittest.TestCase):
     workers_failed_metric = 'rq_workers_failed_total'
     workers_working_time_metric = 'rq_workers_working_time_total'
     jobs_metric = 'rq_jobs'
+    oldest_job_age_metric = 'rq_queue_oldest_job_age_seconds'
 
     def setUp(self):
         """Prepare for the tests.
@@ -55,7 +57,7 @@ class RQCollectorTestCase(unittest.TestCase):
         # On cleanup call patch.stopall
         self.addCleanup(patch.stopall)
 
-    def test_multiple_instances_raise_ValueError(self, get_workers_stats, get_jobs_by_queue):
+    def test_multiple_instances_raise_ValueError(self, get_workers_stats, get_jobs_by_queue, get_oldest_job_ages):
         """Creating multiple instances of `RQCollector` registers duplicate summary metric in the registry."""
         RQCollector()
 
@@ -67,7 +69,7 @@ class RQCollectorTestCase(unittest.TestCase):
             str(error.exception)
         )
 
-    def test_summary_metric(self, get_workers_stats, get_jobs_by_queue):
+    def test_summary_metric(self, get_workers_stats, get_jobs_by_queue, get_oldest_job_ages):
         """Test the summary metric that tracks the requests count and time."""
         collector = RQCollector()
 
@@ -90,7 +92,7 @@ class RQCollectorTestCase(unittest.TestCase):
             f'{self.summary_metric}_sum') > 0
         )
 
-    def test_passed_connection_is_used(self, get_workers_stats, get_jobs_by_queue):
+    def test_passed_connection_is_used(self, get_workers_stats, get_jobs_by_queue, get_oldest_job_ages):
         """Test that the connection passed to `RQCollector` is used to get the workers and jobs."""
         get_workers_stats.return_value = []
         get_jobs_by_queue.return_value = {}
@@ -102,8 +104,9 @@ class RQCollectorTestCase(unittest.TestCase):
 
         get_workers_stats.assert_called_once_with(connection, None)
         get_jobs_by_queue.assert_called_once_with(connection, None)
+        get_oldest_job_ages.assert_called_once_with(connection, None)
 
-    def test_passed_rq_classes_are_used(self, get_workers_stats, get_jobs_by_queue):
+    def test_passed_rq_classes_are_used(self, get_workers_stats, get_jobs_by_queue, get_oldest_job_ages):
         """Test that the RQ classes passed to `RQCollector` are used to get the workers and jobs."""
         get_workers_stats.return_value = []
         get_jobs_by_queue.return_value = {}
@@ -122,8 +125,9 @@ class RQCollectorTestCase(unittest.TestCase):
 
         get_workers_stats.assert_called_once_with(connection, worker_class)
         get_jobs_by_queue.assert_called_once_with(connection, queue_class)
+        get_oldest_job_ages.assert_called_once_with(connection, queue_class)
 
-    def test_metrics_with_empty_data(self, get_workers_stats, get_jobs_by_queue):
+    def test_metrics_with_empty_data(self, get_workers_stats, get_jobs_by_queue, get_oldest_job_ages):
         """Test the workers and jobs metrics when there's no data."""
         get_workers_stats.return_value = []
         get_jobs_by_queue.return_value = {}
@@ -136,8 +140,11 @@ class RQCollectorTestCase(unittest.TestCase):
         self.assertEqual(
             None, self.registry.get_sample_value(self.jobs_metric)
         )
+        self.assertEqual(
+            None, self.registry.get_sample_value(self.oldest_job_age_metric)
+        )
 
-    def test_metrics_with_data(self, get_workers_stats, get_jobs_by_queue):
+    def test_metrics_with_data(self, get_workers_stats, get_jobs_by_queue, get_oldest_job_ages):
         """Test the workers and jobs metrics when there is data available."""
         workers = [
             {
@@ -221,3 +228,18 @@ class RQCollectorTestCase(unittest.TestCase):
                         {'queue': queue, 'status': status}
                     )
                 )
+
+    def test_oldest_job_age_metric(self, get_workers_stats, get_jobs_by_queue, get_oldest_job_ages):
+        """Test the oldest job age metric for each queue."""
+        get_workers_stats.return_value = []
+        get_jobs_by_queue.return_value = {}
+        get_oldest_job_ages.return_value = {'default': 120.5, 'high': 0}
+
+        self.registry.register(RQCollector())
+
+        self.assertEqual(120.5, self.registry.get_sample_value(
+            self.oldest_job_age_metric, {'queue': 'default'}
+        ))
+        self.assertEqual(0, self.registry.get_sample_value(
+            self.oldest_job_age_metric, {'queue': 'high'}
+        ))

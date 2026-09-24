@@ -3,10 +3,13 @@ RQ exporter utility functions.
 
 """
 
+from datetime import datetime, timezone
+
 from redis import Redis
 from redis.sentinel import Sentinel
 from rq import Queue, Worker
 from rq.job import JobStatus
+from rq.utils import as_text, utcparse
 
 
 def get_redis_connection(host='localhost', port='6379', db='0', sentinel=None,
@@ -142,3 +145,52 @@ def get_jobs_by_queue(connection, queue_class=None):
     return {
         q.name: get_queue_jobs(connection, q.name, queue_class) for q in queues
     }
+
+
+def get_oldest_job_ages(connection, queue_class=None):
+    """Get the age of the oldest job waiting in each queue.
+
+    RQ adds jobs to the end of a queue and dequeues from the front, so the
+    front job is normally the oldest. A job enqueued with ``at_front=True``
+    goes to the front instead, so the job at each end is checked.
+
+    Args:
+        connection (redis.Redis): Redis connection instance.
+        queue_class (type): RQ Queue class
+
+    Returns:
+        dict: Age in seconds of the oldest queued job for each queue, or 0
+            for an empty queue
+
+    Raises:
+        redis.exceptions.RedisError: On Redis connection errors
+
+    """
+    queue_class = queue_class if queue_class is not None else Queue
+
+    now = datetime.now(timezone.utc)
+    ages = {}
+
+    for queue in queue_class.all(connection):
+        job_ids = set(queue.get_job_ids(0, 1) + queue.get_job_ids(-1, 1))
+        oldest = 0
+
+        for job_id in job_ids:
+            enqueued_at = connection.hget(
+                queue.job_class.key_for(job_id), 'enqueued_at'
+            )
+
+            # The job may have been dequeued or deleted since the queue was read
+            if not enqueued_at:
+                continue
+
+            enqueued_at = utcparse(as_text(enqueued_at))
+
+            if enqueued_at.tzinfo is None:
+                enqueued_at = enqueued_at.replace(tzinfo=timezone.utc)
+
+            oldest = max(oldest, (now - enqueued_at).total_seconds())
+
+        ages[queue.name] = oldest
+
+    return ages

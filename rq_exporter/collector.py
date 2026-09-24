@@ -8,7 +8,7 @@ import logging
 from prometheus_client import Summary
 from prometheus_client.core import GaugeMetricFamily, CounterMetricFamily
 
-from .utils import get_workers_stats, get_jobs_by_queue
+from .utils import get_workers_stats, get_jobs_by_queue, get_oldest_job_ages
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +69,11 @@ class RQCollector(object):
                 'rq_jobs', 'RQ jobs by state',
                 labels=['queue', 'status'],
             )
+            rq_queue_oldest_job_age = GaugeMetricFamily(
+                'rq_queue_oldest_job_age_seconds',
+                'Age in seconds of the oldest job waiting in the queue',
+                labels=['queue'],
+            )
 
             workers = get_workers_stats(self.connection, self.worker_class)
             for worker in workers:
@@ -96,5 +101,10 @@ class RQCollector(object):
                     rq_jobs.add_metric([queue_name, status], count)
 
             yield rq_jobs
+
+            for (queue_name, age) in get_oldest_job_ages(self.connection, self.queue_class).items():
+                rq_queue_oldest_job_age.add_metric([queue_name], age)
+
+            yield rq_queue_oldest_job_age
 
         logger.debug('RQ metrics collection finished')

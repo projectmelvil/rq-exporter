@@ -78,13 +78,19 @@ You can also find the [JSON file of the dashboard](https://github.com/mdawar/rq-
 
 **RQ metrics:**
 
-| Metric Name                     | Type    | Labels                    | Description                             |
-| ------------------------------- | ------- | ------------------------- | --------------------------------------- |
-| `rq_workers`                    | Gauge   | `name`, `queues`, `state` | RQ workers                              |
-| `rq_jobs`                       | Gauge   | `queue`, `status`         | RQ jobs by queue and status             |
-| `rq_workers_success_total`      | Counter | `name`, `queues`          | Successful job count by worker          |
-| `rq_workers_failed_total`       | Counter | `name`, `queues`          | Failed job count by worker              |
-| `rq_workers_working_time_total` | Counter | `name`, `queues`          | Total working time in seconds by worker |
+| Metric Name                       | Type    | Labels                    | Description                                          |
+| --------------------------------- | ------- | ------------------------- | ---------------------------------------------------- |
+| `rq_workers`                      | Gauge   | `name`, `queues`, `state` | RQ workers                                           |
+| `rq_jobs`                         | Gauge   | `queue`, `status`         | RQ jobs by queue and status                          |
+| `rq_queue_oldest_job_age_seconds` | Gauge   | `queue`                   | Age of the oldest job waiting in the queue (0 if empty) |
+| `rq_workers_success_total`        | Counter | `name`, `queues`          | Successful job count by worker                       |
+| `rq_workers_failed_total`         | Counter | `name`, `queues`          | Failed job count by worker                           |
+| `rq_workers_working_time_total`   | Counter | `name`, `queues`          | Total working time in seconds by worker              |
+
+`rq_queue_oldest_job_age_seconds` measures how long work has been waiting,
+which the queue length alone does not show: a queue can stay short while its
+jobs wait for hours. It reads the job at each end of the queue, so jobs
+enqueued with `at_front=True` are accounted for.
 
 **Request processing metrics:**
 
@@ -115,6 +121,9 @@ rq_jobs{queue="default", status="finished"} 5.0
 rq_jobs{queue="default", status="failed"} 1.0
 rq_jobs{queue="default", status="deferred"} 1.0
 rq_jobs{queue="default", status="scheduled"} 2.0
+# HELP rq_queue_oldest_job_age_seconds Age in seconds of the oldest job waiting in the queue
+# TYPE rq_queue_oldest_job_age_seconds gauge
+rq_queue_oldest_job_age_seconds{queue="default"} 42.7
 ```
 
 ## Configuration

@@ -4,13 +4,18 @@ Tests for the rq_exporter.utils module.
 """
 
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, mock_open, Mock, PropertyMock, call
 
 import rq
 from rq.job import JobStatus
 from redis.exceptions import RedisError
+from rq.utils import utcformat
 
-from rq_exporter.utils import get_redis_connection, get_workers_stats, get_queue_jobs, get_jobs_by_queue
+from rq_exporter.utils import (
+    get_redis_connection, get_workers_stats, get_queue_jobs, get_jobs_by_queue,
+    get_oldest_job_ages,
+)
 
 
 class GetRedisConnectionTestCase(unittest.TestCase):
@@ -514,6 +519,85 @@ class GetJobsByQueueTestCase(unittest.TestCase):
         queue_class.all.return_value = []
 
         get_jobs_by_queue(connection, queue_class)
+
+        Queue.all.assert_not_called()
+        queue_class.all.assert_called_once_with(connection)
+
+
+class GetOldestJobAgesTestCase(unittest.TestCase):
+    """Tests for the `get_oldest_job_ages` function."""
+
+    @staticmethod
+    def _queue(name, front, back):
+        """A mock queue whose first and last job IDs are `front` and `back`."""
+        queue = Mock()
+        queue.configure_mock(name=name)
+        queue.get_job_ids.side_effect = lambda offset, length: {0: front, -1: back}[offset]
+        queue.job_class.key_for.side_effect = lambda job_id: f'rq:job:{job_id}'
+        return queue
+
+    @staticmethod
+    def _connection(ages):
+        """A mock connection whose jobs were enqueued `ages[job_id]` seconds ago."""
+        now = datetime.now(timezone.utc)
+        enqueued = {
+            f'rq:job:{job_id}': utcformat(now - timedelta(seconds=age)).encode()
+            for job_id, age in ages.items()
+        }
+        connection = Mock()
+        connection.hget.side_effect = lambda key, field: enqueued.get(key)
+        return connection
+
+    @patch('rq_exporter.utils.Queue')
+    def test_on_redis_errors_raises_RedisError(self, Queue):
+        """On Redis connection errors, exceptions subclasses of `RedisError` will be raised."""
+        Queue.all.side_effect = RedisError('Connection error')
+
+        with self.assertRaises(RedisError):
+            get_oldest_job_ages(Mock())
+
+    @patch('rq_exporter.utils.Queue')
+    def test_empty_queue_has_age_zero(self, Queue):
+        """An empty queue reports 0 so its series stays continuous."""
+        Queue.all.return_value = [self._queue('default', [], [])]
+
+        self.assertEqual(get_oldest_job_ages(self._connection({})), {'default': 0})
+
+    @patch('rq_exporter.utils.Queue')
+    def test_front_job_age(self, Queue):
+        """The job at the front of the queue is the oldest."""
+        Queue.all.return_value = [self._queue('default', ['a'], ['b'])]
+        connection = self._connection({'a': 3600, 'b': 60})
+
+        ages = get_oldest_job_ages(connection)
+
+        self.assertAlmostEqual(ages['default'], 3600, delta=5)
+
+    @patch('rq_exporter.utils.Queue')
+    def test_job_enqueued_at_front(self, Queue):
+        """A job enqueued at the front leaves the oldest job at the back."""
+        Queue.all.return_value = [self._queue('default', ['new'], ['old'])]
+        connection = self._connection({'new': 10, 'old': 7200})
+
+        ages = get_oldest_job_ages(connection)
+
+        self.assertAlmostEqual(ages['default'], 7200, delta=5)
+
+    @patch('rq_exporter.utils.Queue')
+    def test_job_removed_after_the_queue_was_read(self, Queue):
+        """A job ID whose job hash is gone is skipped."""
+        Queue.all.return_value = [self._queue('default', ['gone'], ['gone'])]
+
+        self.assertEqual(get_oldest_job_ages(self._connection({})), {'default': 0})
+
+    @patch('rq_exporter.utils.Queue')
+    def test_passing_custom_Queue_class(self, Queue):
+        """Test passing a custom `Queue` class."""
+        connection = Mock()
+        queue_class = Mock()
+        queue_class.all.return_value = []
+
+        get_oldest_job_ages(connection, queue_class)
 
         Queue.all.assert_not_called()
         queue_class.all.assert_called_once_with(connection)
